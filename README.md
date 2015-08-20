@@ -6,4 +6,4 @@ Set your country currency, your target currency, and a value. Every day FixrBot 
 
 FixrBot uses the awesome [Fixer API](http://fixer.io).
 
-## It is still under heavy devlopment.
+## It is still under heavy development.

@@ -1,21 +1,26 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
-	"github.com/nubunto/fixr/tg"
+	"time"
+	"github.com/tucnak/telebot"
 )
 
 func main() {
-	bot := tg.NewBot("114377233:AAFGI7taTWCcI_M_jGMI9Cxev37UfshqUH0")
-	
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "hello world")
-		
-		myBot, _ := bot.GetMe()
-		
-		fmt.Printf("%v", myBot)
-	})
-	
-	http.ListenAndServe(":8080", nil)
+	bot, err := telebot.NewBot("114377233:AAGi4pyLGYInLyJOabQUIsFyeV8NM0As42E");
+	if err != nil {
+		return
+	}
+
+	messages := make(chan telebot.Message)
+	bot.Listen(messages, 1 * time.Second)
+
+	for message := range messages {
+		if message.Text == "/hi" {
+			bot.SendMessage(message.Chat, "Hello, " + message.Sender.FirstName + "!", &telebot.SendOptions{
+				ReplyMarkup: telebot.ReplyMarkup{
+					CustomKeyboard: [][]string{ {"how are you", "I'm fine"}, },
+				},
+			})
+		}
+	}
 }

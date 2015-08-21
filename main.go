@@ -3,11 +3,35 @@ package main
 import (
 	"time"
 	"github.com/tucnak/telebot"
+	"fmt"
+	"flag"
 )
 
+type command struct {
+	Message string
+	Markup telebot.ReplyMarkup
+}
+
+func (c command) Send(message telebot.Message, bot *telebot.Bot) {
+	bot.SendMessage(message.Chat, c.Message, &telebot.SendOptions{
+		ReplyMarkup: c.Markup,
+	})
+}
+
+func NewCommand(message string, keyboard [][]string) *command {
+	return &command {
+		Message: message,
+		Markup: telebot.ReplyMarkup{ CustomKeyboard: keyboard },
+	}
+}
+
+var token = flag.String("token", "The bot token", "")
+
 func main() {
-	bot, err := telebot.NewBot("114377233:AAGi4pyLGYInLyJOabQUIsFyeV8NM0As42E");
+	flag.Parse()
+	bot, err := telebot.NewBot(*token)
 	if err != nil {
+		fmt.Printf("Error: %v", err)
 		return
 	}
 
@@ -16,11 +40,9 @@ func main() {
 
 	for message := range messages {
 		if message.Text == "/hi" {
-			bot.SendMessage(message.Chat, "Hello, " + message.Sender.FirstName + "!", &telebot.SendOptions{
-				ReplyMarkup: telebot.ReplyMarkup{
-					CustomKeyboard: [][]string{ {"how are you", "I'm fine"}, },
-				},
-			})
+			c := NewCommand("Hello, " + message.Sender.FirstName, [][]string{ { "fuck", "you" } })
+			c.Send(message, bot)
 		}
 	}
 }
+

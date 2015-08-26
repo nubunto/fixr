@@ -29,8 +29,8 @@ func NewCommand(message string, keyboard [][]string) *command {
 
 
 func main() {
-	flag.Parse()
 	var token = flag.String("token", "The bot token", "")
+	flag.Parse()
 	bot, err := telebot.NewBot(*token)
 	if err != nil {
 		fmt.Errorf("somethings wrong, goodbye. %v", err)

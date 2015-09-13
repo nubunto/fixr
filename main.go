@@ -1,181 +1,132 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
-	"fmt"
-	"github.com/mediocregopher/radix.v2/redis"
 	"github.com/robfig/cron"
 	"github.com/tucnak/telebot"
-	"net/http"
-	"strconv"
+	"io"
+	"log"
+	"os"
+	"strings"
 	"time"
+	"bytes"
+	"sort"
 )
 
-var fixerAPI = "http://api.fixer.io/latest"
+var (
+	infoLogger *log.Logger
+	errorLogger *log.Logger
+)
 
-type fixer struct {
-	Base  string             `json:"base"`
-	Rates map[string]float64 `json:"rates"`
+var commands = map[string]string {
+	"/setbase": "Sets the base currency for calculations",
+	"/add [rates] (comma separated)": "Adds a given rate to daily notifications and requests",
+	"/clear": "Clears all your rates",
+	"/del [rate]": "Removes given rate from daily notifications and requests",
+	"/start": "Subscribes to daily notifications",
+	"/stop": "Unsubscribes from daily notifications",
+	"/help": "See this message",
+	"/iso": "See the ISO codes of currencies in order to select which one to pass to /setbase or /add",
 }
 
-func (f fixer) String() string {
-	s := fmt.Sprintf("Your base currency is %s\n", f.Base)
-	s += "These are todays rates:\n"
-	for currency, value := range f.Rates {
-		s += fmt.Sprintf("Currency: %s, value: %.3f\n", currency, value)
+func showHelp() string {
+	// go doesn't guarantee map ordering....
+	var buf bytes.Buffer
+	buf.WriteString("Hello! Welcome to FixrBot. This bot aims to help you with currency values from around the world.\nHere are my features:\n\n")
+	keys, i := make([]string, len(commands)), 0
+	for command, _ := range commands {
+		keys[i] = command
+		i += 1
 	}
-	return s
+	sort.Strings(keys)
+	for _, key := range keys {
+		buf.WriteString(key)
+		buf.WriteString(" - ")
+		buf.WriteString(commands[key])
+		buf.WriteString("\n")
+	}
+	return buf.String()
 }
 
-func getFixerData(base string) (fixer, error) {
-	if len(base) == 0 {
-		base = "EUR"
-	}
-	resp, err := http.Get(fixerAPI + "?base=" + base)
-	defer resp.Body.Close()
-	if err != nil {
-		return fixer{}, err
-	}
-	var fixerData fixer
-	err = json.NewDecoder(resp.Body).Decode(&fixerData)
-	if err != nil {
-		return fixer{}, err
-	}
-	return fixerData, nil
-}
-
-func sendCurrencies(bot *telebot.Bot) {
-	client, err := redis.Dial("tcp", "localhost:6379")
-	defer client.Close()
-	if err != nil {
-		fmt.Printf("error: %v", err)
-	}
-	members, err := client.Cmd("SMEMBERS", "users").Array()
-	if err != nil {
-		fmt.Printf("error: %v", err)
-	}
-	for _, member := range members {
-		id, err := member.Str()
-		user, _ := strconv.Atoi(id)
-		if err != nil {
-			fmt.Printf("error: %v", err)
-		}
-		base, _ := client.Cmd("HGET", fmt.Sprintf("users:%d", user), "base").Str()
-		fixerData, err := getFixerData(base)
-		if err != nil {
-			fmt.Printf("error: %v", err)
-		}
-		bot.SendMessage(telebot.User{ID: user}, fixerData.String(), nil)
-	}
-}
-
-func sendTo(ID int, base string, bot *telebot.Bot) {
-	fixerData, err := getFixerData(base)
-	if err != nil {
-		fmt.Errorf("Error querying the Fixer API: %v", err)
-	}
-	bot.SendMessage(telebot.User{ID: ID}, fixerData.String(), nil)
-}
-
-func startSched(bot *telebot.Bot) {
+func startSched(bot *telebot.Bot, fa *FixrAccessor) {
+	cronString := "@every 1m"
+	infoLogger.Printf("Scheduling cron job for %s\n", cronString)
 	sched := cron.New()
-	sched.AddFunc("@every 1m", func() {
-		sendCurrencies(bot)
+	sched.AddFunc(cronString, func() {
+		sendCurrencies(bot, fa)
 	})
 	sched.Start()
 }
 
+func createLoggers(info, err io.Writer) (*log.Logger, *log.Logger) {
+	logType := log.Ldate | log.Ltime | log.Lshortfile
+	return log.New(info, "INFO: ", logType), log.New(err, "ERROR :", logType)
+}
+
+func init() {
+	infoLogger, errorLogger = createLoggers(os.Stdout, os.Stdout)
+}
+
 func main() {
 	var token = flag.String("token", "The bot token", "")
+	var redis = flag.String("redis", "The transport and address to bind to redis, comma separated", "tcp,localhost:6379")
 	flag.Parse()
 	bot, err := telebot.NewBot(*token)
+
 	if err != nil {
-		fmt.Errorf("somethings wrong, goodbye. %v", err)
+		panic(err)
 	}
-	redis_cli, err := redis.Dial("tcp", "localhost:6379")
-	defer redis_cli.Close()
-	if err != nil {
-		fmt.Errorf("redis_cli died.")
-	}
-	startSched(bot)
+
+	redisConfig := strings.Split(*redis, ",")
+	transport, address := redisConfig[0], redisConfig[1]
+
+	fixrAccessor := NewBackend(transport, address);
+
+	defer fixrAccessor.Close()
+	infoLogger.Println("Started Redis instance")
+	startSched(bot, fixrAccessor)
 	messages := make(chan telebot.Message)
 	bot.Listen(messages, 1*time.Second)
+	defer recoverMain(errorLogger)
 	for message := range messages {
-		if message.Text == "/start" || message.Text == "/subscribe" {
-			handleSubscription(message.Sender.ID, message.Sender.FirstName, bot, redis_cli)
+		infoLogger.Printf("Got %s message from %v\n", message.Text, message.Chat)
+		if message.Text == "/start" {
+			bot.SendMessage(message.Chat, showHelp(), nil)
+			if subscribed, err := fixrAccessor.Subscribe(message.Chat.ID); err != nil && !subscribed {
+				bot.SendMessage(message.Chat, "You are already subscribed.", nil)
+			} else {
+				bot.SendMessage(message.Chat, "You were subscribed to daily notifications. Send /stop if you don't want that.", nil)
+			}
 		}
-		if message.Text == "/unsubscribe" {
-			handleUnsubscription(message.Sender.ID, bot, redis_cli)
+		if message.Text == "/stop" {
+			if unsubscribed, err := fixrAccessor.Unsubscribe(message.Chat.ID); err != nil && !unsubscribed {
+				bot.SendMessage(message.Chat, "You are already unsubscribed.", nil)
+			} else {
+				bot.SendMessage(message.Chat, "You were unsubscribed from daily notifications. Send /start to subscribe again", nil)
+			}
 		}
-		if message.Text == "/currencies" {
-			sendTo(message.Sender.ID, "USD", bot)
+		if message.Text == "/get" {
+			sendTo(message.Chat.ID, bot, fixrAccessor)
 		}
-		if message.Text == "/set" {
-			// TODO: The user can select custom currencies. This involves a little more design on the DB part.
+		if message.Text == "/help" {
+			bot.SendMessage(message.Chat, showHelp(), nil)
 		}
-	}
-}
-
-func handleSubscription(ID int, firstName string, bot *telebot.Bot, redis_cli *redis.Client) {
-	subscribed, err := isSubscribed(ID, redis_cli)
-	user := telebot.User{ID: ID}
-	if err != nil {
-		fmt.Errorf("somethings wrong, goodbye. %v", err)
-	}
-	if subscribed {
-		bot.SendMessage(user, "You are already subscribed.", nil)
-	} else {
-		err := subscribe(ID, redis_cli)
-		if err != nil {
-			fmt.Printf("Something's wrong: %v", err)
+		if len(message.Text) > len("/setbase") && message.Text[:len("/setbase")] == "/setbase" {
+			base := message.Text[len("/setbase") + 1:]
+			if altered := fixrAccessor.SetBase(message.Chat.ID, base); altered {
+				bot.SendMessage(message.Chat, "Base altered to " + currencies[base], nil)
+			} else {
+				bot.SendMessage(message.Chat, "Base \"" + base + "\" is not recognized.", nil)
+			}
 		}
-		bot.SendMessage(user, "Welcome aboard, "+firstName+"! We're glad to have you here.", nil)
-	}
-}
-
-func handleUnsubscription(ID int, bot *telebot.Bot, redis_cli *redis.Client) {
-	subscribed, err := isSubscribed(ID, redis_cli)
-	user := telebot.User{ID: ID}
-	if err != nil {
-		fmt.Errorf("Error on unsubscription: %v", err)
-	}
-	if !subscribed {
-		bot.SendMessage(user, "You aren't subscribed.", nil)
-	} else {
-		unsubscribed, err := unsubscribe(ID, redis_cli)
-		if unsubscribed {
-			bot.SendMessage(user, "You are now no longer subscribed. Send /subscribe if you want to get back on notifications.", nil)
-		} else if err != nil {
-			fmt.Errorf("Got error: %v", err)
+		if message.Text == "/iso" {
+			bot.SendMessage(message.Chat, getIsoNames(), nil) 
 		}
 	}
 }
 
-func isSubscribed(ID int, redis_cli *redis.Client) (bool, error) {
-	isSubscribed, err := redis_cli.Cmd("SISMEMBER", "users", ID).Int()
-	if err != nil {
-		return false, err
+func recoverMain(errorLogger *log.Logger) {
+	if err := recover(); err != nil {
+		errorLogger.Printf("PANIC on error %v", err)
 	}
-	return isSubscribed == 1, nil
-}
-
-func subscribe(ID int, redis_cli *redis.Client) error {
-	err := redis_cli.Cmd("SADD", "users", ID).Err
-	if err != nil {
-		return err
-	}
-	err = redis_cli.Cmd("HMSET", fmt.Sprintf("users:%d", ID), "base", "USD").Err
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func unsubscribe(ID int, redis_cli *redis.Client) (bool, error) {
-	err := redis_cli.Cmd("SREM", "users", ID).Err
-	if err != nil {
-		return false, err
-	}
-	return true, nil
 }

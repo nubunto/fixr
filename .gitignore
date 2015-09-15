@@ -27,4 +27,4 @@ _testmain.go
 *.rdb
 
 # Common executable
-fixr
+cmd/cmd

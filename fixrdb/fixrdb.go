@@ -90,6 +90,13 @@ func (fa *FixrDB) SetRates(ID int, rates []string) {
 	}
 }
 
+func (fa *FixrDB) RemoveRate(ID int, rate string) {
+	err := fa.client.Cmd("SREM", fmt.Sprintf("rates:%d", ID), rate).Err
+	if err != nil {
+		panic(err)
+	}
+}
+
 func (fa *FixrDB) SetBase(ID int, base string) bool {
 	if isValid := fixerio.IsValidBase(base); !isValid {
 		return false

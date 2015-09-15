@@ -18,8 +18,7 @@ var (
 	errorLogger *log.Logger
 )
 
-func startSched(bot *telebot.Bot, fa *fixrdb.FixrDB) {
-	cronString := "@every 1m"
+func startSched(bot *telebot.Bot, fa *fixrdb.FixrDB, cronString string) {
 	infoLogger.Printf("Scheduling cron job for %s\n", cronString)
 	sched := cron.New()
 	sched.AddFunc(cronString, func() {
@@ -42,6 +41,7 @@ func main() {
 	defer recoverMain(errorLogger)
 	var token = flag.String("token", "", "The bot token")
 	var redis = flag.String("redis", "localhost:6379", "The address to bind to redis, e.g. \"localhost:5555\"")
+	var cronString = flag.String("cron", "0 0 9 * * *", "The cron string on which to send currencies.")
 	flag.Parse()
 	bot, err := telebot.NewBot(*token)
 
@@ -53,7 +53,7 @@ func main() {
 
 	defer fixrAccessor.Close()
 	infoLogger.Println("Started Redis instance")
-	startSched(bot, fixrAccessor)
+	startSched(bot, fixrAccessor, *cronString)
 	messages := make(chan telebot.Message)
 	bot.Listen(messages, 1*time.Second)
 	for message := range messages {

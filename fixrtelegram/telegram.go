@@ -87,6 +87,7 @@ func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrd
 			bot.SendMessage(message.Chat, "You were subscribed to daily notifications. Send /stop if you don't want that.", nil)
 		}
 	}
+
 	if message.Text == "/stop" {
 		if unsubscribed, err := fixrAccessor.Unsubscribe(message.Chat.ID); err != nil && !unsubscribed {
 			bot.SendMessage(message.Chat, "You are already unsubscribed.", nil)
@@ -94,12 +95,20 @@ func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrd
 			bot.SendMessage(message.Chat, "You were unsubscribed from daily notifications. Send /start to subscribe again", nil)
 		}
 	}
+
 	if message.Text == "/get" {
 		err = sendTo(message.Chat.ID, bot, fixrAccessor)
 	}
+
+	if msgs := strings.Split(message.Text, " "); len(msgs) == 2 && msgs[0] == "/del" {
+		fixrAccessor.RemoveRate(message.Chat.ID, msgs[1])
+		bot.SendMessage(message.Chat, fmt.Sprintf("Removed currency %s", msgs[1]), nil)
+	}
+
 	if message.Text == "/help" {
 		bot.SendMessage(message.Chat, GetCommands(), nil)
 	}
+
 	if len(message.Text) > len("/setbase") && message.Text[:len("/setbase")] == "/setbase" {
 		base := message.Text[len("/setbase")+1:]
 		if altered := fixrAccessor.SetBase(message.Chat.ID, base); altered {
@@ -108,6 +117,7 @@ func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrd
 			bot.SendMessage(message.Chat, "Base \""+base+"\" is not recognized.", nil)
 		}
 	}
+
 	if message.Text == "/iso" {
 		bot.SendMessage(message.Chat, fixerio.GetIsoNames(), nil)
 	}

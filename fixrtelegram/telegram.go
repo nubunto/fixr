@@ -34,11 +34,15 @@ const (
 
 
 func SendAll(bot *telebot.Bot, fa *fixrdb.FixrDB) error {
-	members := fa.GetRegistered()
+	members, err := fa.GetRegistered()
+	if err != nil {
+		return err
+	}
 	for _, member := range members {
+		var err error
 		user, _ := strconv.Atoi(member)
-		base := fa.GetSetting(user, "base")
-		rates := fa.GetRates(user)
+		base, err := fa.GetSetting(user, "base")
+		rates, err := fa.GetRates(user)
 		FixerData, err := fixerio.GetFixerData(base, rates)
 		if err != nil {
 			return err
@@ -49,8 +53,9 @@ func SendAll(bot *telebot.Bot, fa *fixrdb.FixrDB) error {
 }
 
 func sendTo(ID int, bot *telebot.Bot, fa *fixrdb.FixrDB) error {
-	rates := fa.GetRates(ID)
-	base := fa.GetSetting(ID, "base")
+	var err error
+	rates, err := fa.GetRates(ID)
+	base, err := fa.GetSetting(ID, "base")
 	FixerData, err := fixerio.GetFixerData(base, rates)
 	if err != nil {
 		return err
@@ -111,10 +116,12 @@ func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrd
 
 	if len(message.Text) > len("/setbase") && message.Text[:len("/setbase")] == "/setbase" {
 		base := message.Text[len("/setbase")+1:]
-		if altered := fixrAccessor.SetBase(message.Chat.ID, base); altered {
+		if altered, err := fixrAccessor.SetBase(message.Chat.ID, base); altered {
 			bot.SendMessage(message.Chat, "Base altered to "+fixerio.Currencies[base], nil)
-		} else {
-			bot.SendMessage(message.Chat, "Base \""+base+"\" is not recognized.", nil)
+		} else if err != nil {
+			if err == fixrdb.ErrInvalidBase {
+				bot.SendMessage(message.Chat, "Base \""+base+"\" is not recognized.", nil)
+			}
 		}
 	}
 
@@ -147,19 +154,22 @@ func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrd
 	} else if lastCommand == addingCommand {
 		if validBase := fixerio.IsValidBase(message.Text); validBase {
 			rates = append(rates, message.Text)
-			bot.SendMessage(message.Chat, fmt.Sprintf("Rates added so far: %s", strings.Join(rates, ",")), nil)
+			bot.SendMessage(message.Chat, fmt.Sprintf("Rates added so far: %s\nWhen you're done adding currencies, send me /done to save them.", strings.Join(rates, ",")), nil)
 		} else {
-			bot.SendMessage(message.Chat, "Invalid ISO code. Please, see /iso to inspect valid currencies and add them here.", nil)
+			bot.SendMessage(message.Chat, "Invalid ISO code. Please, see /iso to inspect valid currencies and add them here. Go check, I'll wait. I'll only finish this up when you send me /done", nil)
 		}
 	}
+
 	if msgs := strings.Split(message.Text, " "); len(msgs) > 0 && msgs[0] == "/add" && lastCommand == noop {
 		rates = msgs[1:]
 		fixrAccessor.SetRates(message.Chat.ID, rates)
 		bot.SendMessage(message.Chat, fmt.Sprintf("Added the following rates: %s", strings.Join(rates, ",")), nil)
 		rates = []string{}
 	}
+
 	if err != nil {
 		return err
 	}
+
 	return nil
 }

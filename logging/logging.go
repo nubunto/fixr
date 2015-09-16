@@ -1,12 +1,12 @@
 package logging
 
 import (
-	"log"
 	"io"
+	"log"
 )
 
 var (
-	infoLogger *log.Logger
+	infoLogger  *log.Logger
 	errorLogger *log.Logger
 )
 

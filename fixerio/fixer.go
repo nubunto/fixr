@@ -10,13 +10,20 @@ import (
 	"strings"
 )
 
+// The url of the Fixer API we're issuing
 var fixerAPI = "http://api.fixer.io/latest?"
 
+// The response of the Fixer API
 type Fixer struct {
-	Base  string             `json:"base"`
+	// Base is the currency base for calculations
+	Base string `json:"base"`
+
+	// Rates are the values, along with the ISO codes of each currency, and it's value, giving the base.
 	Rates map[string]float64 `json:"rates"`
 }
 
+// By lack of a public documentation, I got these out from a request to Fixer.
+// Thse are all (I hope) the valid ISO codes of currencies Fixer supports.
 var Currencies = map[string]string{
 	"EUR": "Euro",
 	"AUD": "Australian Dollar",
@@ -52,6 +59,7 @@ var Currencies = map[string]string{
 	"ZAR": "Rand",
 }
 
+// Implement Stringer, so we can print it to messages in telegram
 func (f Fixer) String() string {
 	var buffer bytes.Buffer
 	buffer.WriteString(fmt.Sprintf("Your base currency is %s\n", Currencies[f.Base]))
@@ -66,6 +74,7 @@ func (f Fixer) String() string {
 	return buffer.String()
 }
 
+// Get's the names of ISO codes, and sorts them alphabetically
 func GetIsoNames() string {
 	var buf bytes.Buffer
 	keys, i := make([]string, len(Currencies)), 0
@@ -83,6 +92,7 @@ func GetIsoNames() string {
 	return buf.String()
 }
 
+// Get's the ISO codes as a string
 func GetIsoCodes() []string {
 	keys, i := make([]string, len(Currencies)), 0
 	for code, _ := range Currencies {
@@ -92,11 +102,13 @@ func GetIsoCodes() []string {
 	return keys
 }
 
+// See's if Fixer can handle this base.
 func IsValidBase(base string) bool {
 	_, ok := Currencies[base]
 	return ok
 }
 
+// Returns an JSON object from the Fixer API.
 func GetFixerData(base string, rates []string) (Fixer, error) {
 	vals := url.Values{}
 	if len(base) > 0 {
@@ -117,4 +129,3 @@ func GetFixerData(base string, rates []string) (Fixer, error) {
 	}
 	return FixerData, nil
 }
-

@@ -2,37 +2,43 @@ package fixrtelegram
 
 import (
 	"bytes"
-	"sort"
-	"fmt"
-	"strings"
-	"strconv"
 	"fixr/fixerio"
 	"fixr/fixrdb"
+	"fmt"
 	"github.com/tucnak/telebot"
+	"fixr/logging"
+	"sort"
+	"strconv"
+	"strings"
 )
 
+// all implemented commands.
 var commands = map[string]string{
-	"/setbase":                       "Sets the base currency for calculations",
-	"/add": "Prompts rates and adds them to daily notifications and requests",
+	"/setbase":    "Sets the base currency for calculations",
+	"/add":        "Prompts rates and adds them to daily notifications and requests",
 	"/clear":      "Clears all your rates",
 	"/del [rate]": "Removes given rate from daily notifications and requests",
 	"/start":      "Subscribes to daily notifications",
 	"/stop":       "Unsubscribes from daily notifications",
 	"/help":       "See this message",
 	"/iso":        "See the ISO codes of currencies in order to select which one to pass to /setbase or /add",
+	"/cancel":     "Cancel the /add command and don't change anything.",
 }
 
+// handles adding commands via a lonely /add command.
+// TODO: refactor this. It's ugly.
 var (
 	lastCommand int = noop
-	rates []string
+	rates       []string
 )
 
+// consts that manage state of commands.
 const (
 	noop int = 1 << iota
 	addingCommand
 )
 
-
+// Send a Fixer message to all registered users.
 func SendAll(bot *telebot.Bot, fa *fixrdb.FixrDB) error {
 	members, err := fa.GetRegistered()
 	if err != nil {
@@ -41,17 +47,15 @@ func SendAll(bot *telebot.Bot, fa *fixrdb.FixrDB) error {
 	for _, member := range members {
 		var err error
 		user, _ := strconv.Atoi(member)
-		base, err := fa.GetSetting(user, "base")
-		rates, err := fa.GetRates(user)
-		FixerData, err := fixerio.GetFixerData(base, rates)
+		err = sendTo(user, bot, fa)
 		if err != nil {
-			return err
+			logging.Error(err)
 		}
-		bot.SendMessage(telebot.User{ID: user}, FixerData.String(), nil)
 	}
 	return nil
 }
 
+// sends a fixer message to a single ID.
 func sendTo(ID int, bot *telebot.Bot, fa *fixrdb.FixrDB) error {
 	var err error
 	rates, err := fa.GetRates(ID)
@@ -64,8 +68,9 @@ func sendTo(ID int, bot *telebot.Bot, fa *fixrdb.FixrDB) error {
 	return nil
 }
 
+// Gets the commands as a string.
+// TODO: repeating map ordering. Refactor.
 func GetCommands() string {
-	// go doesn't guarantee map ordering....
 	var buf bytes.Buffer
 	buf.WriteString("Hello! Welcome to FixrBot. This bot aims to help you with currency values from around the world.\nHere are my features:\n\n")
 	keys, i := make([]string, len(commands)), 0
@@ -83,6 +88,8 @@ func GetCommands() string {
 	return buf.String()
 }
 
+// Handles the message currently received.
+// TODO: refactor.
 func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrdb.FixrDB) error {
 	var err error
 	if message.Text == "/start" {
@@ -134,16 +141,21 @@ func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrd
 		bot.SendMessage(message.Chat, "Cleared all rates. Showing everything now.", nil)
 	}
 
-
+	// if we receive a lonely /add command
 	if message.Text == "/add" {
 		lastCommand = addingCommand
 		rates = []string{}
 		bot.SendMessage(message.Chat, "Okay, let's add some currencies. Tell me which are they. You can search some of them with /iso before /add'ing them.", nil)
-	} else if message.Text == "/done" {
-		fmt.Printf("what")
-		if len(rates) > 0 {
+	} else if message.Text == "/done" || message.Text == "/cancel" {
+		// if we're done, set the rates, clear commands and hide any custom keyboards.
+		if len(rates) > 0 && message.Text != "/cancel" {
 			fixrAccessor.SetRates(message.Chat.ID, rates)
 		}
+
+		if lastCommand != addingCommand && message.Text == "/cancel" {
+			bot.SendMessage(message.Chat, "I wasn't really doing anything...", nil)
+		}
+
 		lastCommand = noop
 		rates = []string{}
 		bot.SendMessage(message.Chat, "Done adding rates.", &telebot.SendOptions{
@@ -152,6 +164,7 @@ func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrd
 			},
 		})
 	} else if lastCommand == addingCommand {
+		// if we're adding, append to the rates if it is a valid
 		if validBase := fixerio.IsValidBase(message.Text); validBase {
 			rates = append(rates, message.Text)
 			bot.SendMessage(message.Chat, fmt.Sprintf("Rates added so far: %s\nWhen you're done adding currencies, send me /done to save them.", strings.Join(rates, ",")), nil)
@@ -160,13 +173,16 @@ func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrd
 		}
 	}
 
+	// if we receive a /add command with stuff after it AND we are not adding anything,
 	if msgs := strings.Split(message.Text, " "); len(msgs) > 0 && msgs[0] == "/add" && lastCommand == noop {
+		// strip them off the command, and insert them.
 		rates = msgs[1:]
 		fixrAccessor.SetRates(message.Chat.ID, rates)
 		bot.SendMessage(message.Chat, fmt.Sprintf("Added the following rates: %s", strings.Join(rates, ",")), nil)
 		rates = []string{}
 	}
 
+	// if there was any error, return it.
 	if err != nil {
 		return err
 	}

@@ -9,6 +9,7 @@ import (
 	"fixr/logging"
 	"sort"
 	"strconv"
+	"regexp"
 	"strings"
 )
 
@@ -25,18 +26,114 @@ var commands = map[string]string{
 	"/cancel":     "Cancel the /add command and don't change anything.",
 }
 
-// handles adding commands via a lonely /add command.
-// TODO: refactor this. It's ugly.
-var (
-	lastCommand int = noop
-	rates       []string
-)
+type commandHandler func(*telebot.Bot, telebot.Message, *fixrdb.FixrDB) error
 
-// consts that manage state of commands.
-const (
-	noop int = 1 << iota
-	addingCommand
-)
+var commandDispatcher = map[string]commandHandler{
+	"/setbase": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+			var err error
+			base := message.Text[len("/setbase")+1:]
+			if altered, err := fixrAccessor.SetBase(message.Chat.ID, base); altered {
+				bot.SendMessage(message.Chat, "Base altered to "+fixerio.Currencies[base], nil)
+			} else if err != nil {
+				if err == fixrdb.ErrInvalidBase {
+					bot.SendMessage(message.Chat, "Base \""+base+"\" is not recognized.", nil)
+				}
+			}
+			if err != nil { return err }
+			return nil
+		},
+	"/start": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+		var err error
+		if subscribed, err := fixrAccessor.Subscribe(message.Chat.ID); err != nil && !subscribed {
+			bot.SendMessage(message.Chat, "You are already subscribed.", nil)
+		} else {
+			bot.SendMessage(message.Chat, "You were subscribed to daily notifications. Send /stop if you don't want that.", nil)
+		}
+		if err != nil { return err }
+		return nil
+	},
+	"/stop": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+		var err error
+		if unsubscribed, err := fixrAccessor.Unsubscribe(message.Chat.ID); err != nil && !unsubscribed {
+			bot.SendMessage(message.Chat, "You are already unsubscribed.", nil)
+		} else {
+			bot.SendMessage(message.Chat, "You were unsubscribed from daily notifications. Send /start to subscribe again", nil)
+		}
+		if err != nil { return err }
+		return nil
+	},
+	"/get": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+		return sendTo(message.Chat.ID, bot, fixrAccessor)
+	},
+	"/del": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+		msgs := strings.Split(message.Text, " ")
+		fixrAccessor.RemoveRate(message.Chat.ID, msgs[1])
+		bot.SendMessage(message.Chat, fmt.Sprintf("Removed currency %s", msgs[1]), nil)
+		return nil
+	},
+	"/iso": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+		bot.SendMessage(message.Chat, fixerio.GetIsoNames(), nil)
+		return nil
+	},
+	"/clear": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+		var err error 
+		err = fixrAccessor.ClearRates(message.Chat.ID)
+		bot.SendMessage(message.Chat, "Cleared all rates. Showing everything now.", nil)
+		if err != nil { return err }
+		return nil
+	},
+	"/help": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+		bot.SendMessage(message.Chat, GetCommands(), nil)
+		return nil
+	},
+	"/add": func(bot *telebot.Bot, message telebot.Message, fixrAccessor *fixrdb.FixrDB) error {
+		var err error
+		if msgs := strings.Split(message.Text, " "); len(msgs) > 1 && !addingHandler.active {
+			err = fixrAccessor.SetRates(message.Chat.ID, msgs[1:])
+			bot.SendMessage(message.Chat, fmt.Sprintf("Added the following rates: %s", strings.Join(addingHandler.rates, ",")), nil)
+		}
+		addingHandler.active = true
+		bot.SendMessage(message.Chat, "Okay, let's add some currencies. Tell me which are they. You can search some of them with /iso before /add'ing them.", nil)
+		if err != nil { return err }
+		return nil
+	},
+
+}
+
+type addingCommand struct {
+	rates []string
+	active bool
+}
+
+var addingHandler *addingCommand
+
+func (ah *addingCommand) Do(bot *telebot.Bot, message telebot.Message, db *fixrdb.FixrDB) error {
+	var err error
+	msg := message.Text
+	if ah.active {
+		if msg == "/done" {
+			err = db.SetRates(message.Chat.ID, ah.rates)
+			bot.SendMessage(message.Chat, "Done adding rates.", nil)
+			ah.active = false
+		} else if msg == "/cancel" {
+			ah.rates = []string{}
+			ah.active = false
+			bot.SendMessage(message.Chat, "Bailing out. Didn't add any rates.", nil)
+		} else {
+			if validBase := fixerio.IsValidBase(message.Text); validBase {
+				ah.rates = append(ah.rates, message.Text)
+				bot.SendMessage(message.Chat, fmt.Sprintf("Rates added so far: %s\nWhen you're done adding currencies, send me /done to save them.", strings.Join(ah.rates, ",")), nil)
+			} else {
+				bot.SendMessage(message.Chat, "Invalid ISO code. Please, see /iso to inspect valid currencies and add them here. Go check, I'll wait. I'll only finish this up when you send me /done", nil)
+			}
+		}
+	} else {
+		bot.SendMessage(message.Chat, "Okay, let's add some currencies. Tell me which are they. You can search some of them with /iso before /add'ing them.", nil)
+		ah.active = true
+	}
+	if err != nil { return err }
+	return nil
+}
 
 // Send a Fixer message to all registered users.
 func SendAll(bot *telebot.Bot, fa *fixrdb.FixrDB) error {
@@ -69,7 +166,7 @@ func sendTo(ID int, bot *telebot.Bot, fa *fixrdb.FixrDB) error {
 }
 
 // Gets the commands as a string.
-// TODO: repeating map ordering. Refactor.
+// TODO: repeating map ordering in somewhere else. Refactor.
 func GetCommands() string {
 	var buf bytes.Buffer
 	buf.WriteString("Hello! Welcome to FixrBot. This bot aims to help you with currency values from around the world.\nHere are my features:\n\n")
@@ -89,103 +186,22 @@ func GetCommands() string {
 }
 
 // Handles the message currently received.
-// TODO: refactor.
 func HandleAction(message telebot.Message, bot *telebot.Bot, fixrAccessor *fixrdb.FixrDB) error {
 	var err error
-	if message.Text == "/start" {
-		if subscribed, err := fixrAccessor.Subscribe(message.Chat.ID); err != nil && !subscribed {
-			bot.SendMessage(message.Chat, "You are already subscribed.", nil)
+	if addingHandler == nil {
+		addingHandler = &addingCommand{make([]string, 0), false}
+	}
+	if addingHandler.active {
+		addingHandler.Do(bot, message, fixrAccessor)
+	} else {
+		re, _ := regexp.Compile("/[a-z]+") 
+		command := re.FindString(message.Text)
+		if fn, ok := commandDispatcher[command]; ok {
+			err = fn(bot, message, fixrAccessor)
 		} else {
-			bot.SendMessage(message.Chat, "You were subscribed to daily notifications. Send /stop if you don't want that.", nil)
+			commandDispatcher["/help"](bot, message, fixrAccessor)
 		}
 	}
-
-	if message.Text == "/stop" {
-		if unsubscribed, err := fixrAccessor.Unsubscribe(message.Chat.ID); err != nil && !unsubscribed {
-			bot.SendMessage(message.Chat, "You are already unsubscribed.", nil)
-		} else {
-			bot.SendMessage(message.Chat, "You were unsubscribed from daily notifications. Send /start to subscribe again", nil)
-		}
-	}
-
-	if message.Text == "/get" {
-		err = sendTo(message.Chat.ID, bot, fixrAccessor)
-	}
-
-	if msgs := strings.Split(message.Text, " "); len(msgs) == 2 && msgs[0] == "/del" {
-		fixrAccessor.RemoveRate(message.Chat.ID, msgs[1])
-		bot.SendMessage(message.Chat, fmt.Sprintf("Removed currency %s", msgs[1]), nil)
-	}
-
-	if message.Text == "/help" {
-		bot.SendMessage(message.Chat, GetCommands(), nil)
-	}
-
-	if len(message.Text) > len("/setbase") && message.Text[:len("/setbase")] == "/setbase" {
-		base := message.Text[len("/setbase")+1:]
-		if altered, err := fixrAccessor.SetBase(message.Chat.ID, base); altered {
-			bot.SendMessage(message.Chat, "Base altered to "+fixerio.Currencies[base], nil)
-		} else if err != nil {
-			if err == fixrdb.ErrInvalidBase {
-				bot.SendMessage(message.Chat, "Base \""+base+"\" is not recognized.", nil)
-			}
-		}
-	}
-
-	if message.Text == "/iso" {
-		bot.SendMessage(message.Chat, fixerio.GetIsoNames(), nil)
-	}
-
-	if message.Text == "/clear" {
-		fixrAccessor.ClearRates(message.Chat.ID)
-		bot.SendMessage(message.Chat, "Cleared all rates. Showing everything now.", nil)
-	}
-
-	// if we receive a lonely /add command
-	if message.Text == "/add" {
-		lastCommand = addingCommand
-		rates = []string{}
-		bot.SendMessage(message.Chat, "Okay, let's add some currencies. Tell me which are they. You can search some of them with /iso before /add'ing them.", nil)
-	} else if message.Text == "/done" || message.Text == "/cancel" {
-		// if we're done, set the rates, clear commands and hide any custom keyboards.
-		if len(rates) > 0 && message.Text != "/cancel" {
-			fixrAccessor.SetRates(message.Chat.ID, rates)
-		}
-
-		if lastCommand != addingCommand && message.Text == "/cancel" {
-			bot.SendMessage(message.Chat, "I wasn't really doing anything...", nil)
-		}
-
-		lastCommand = noop
-		rates = []string{}
-		bot.SendMessage(message.Chat, "Done adding rates.", &telebot.SendOptions{
-			ReplyMarkup: telebot.ReplyMarkup{
-				HideCustomKeyboard: true,
-			},
-		})
-	} else if lastCommand == addingCommand {
-		// if we're adding, append to the rates if it is a valid
-		if validBase := fixerio.IsValidBase(message.Text); validBase {
-			rates = append(rates, message.Text)
-			bot.SendMessage(message.Chat, fmt.Sprintf("Rates added so far: %s\nWhen you're done adding currencies, send me /done to save them.", strings.Join(rates, ",")), nil)
-		} else {
-			bot.SendMessage(message.Chat, "Invalid ISO code. Please, see /iso to inspect valid currencies and add them here. Go check, I'll wait. I'll only finish this up when you send me /done", nil)
-		}
-	}
-
-	// if we receive a /add command with stuff after it AND we are not adding anything,
-	if msgs := strings.Split(message.Text, " "); len(msgs) > 0 && msgs[0] == "/add" && lastCommand == noop {
-		// strip them off the command, and insert them.
-		rates = msgs[1:]
-		fixrAccessor.SetRates(message.Chat.ID, rates)
-		bot.SendMessage(message.Chat, fmt.Sprintf("Added the following rates: %s", strings.Join(rates, ",")), nil)
-		rates = []string{}
-	}
-
-	// if there was any error, return it.
-	if err != nil {
-		return err
-	}
-
+	if err != nil { return err }
 	return nil
 }
